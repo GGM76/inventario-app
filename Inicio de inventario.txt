@@ -1,0 +1,278 @@
+Pasos para construir el sistema de inventario
+1. Configuración del entorno de desarrollo
+1.1. Instalar Node.js y MongoDB
+Asegúrate de tener Node.js instalado en tu máquina. Puedes descargarlo desde aquí.
+MongoDB: Instala MongoDB en tu local o utiliza MongoDB Atlas para la base de datos en la nube. Si usas MongoDB Atlas, asegúrate de crear un clúster y obtener la URL de conexión a tu base de datos.
+1.2. Inicializar proyecto Node.js (Backend)
+Crea un directorio para el proyecto:
+
+bash
+Copiar
+mkdir inventario-app
+cd inventario-app
+Inicializa un proyecto Node.js:
+
+bash
+Copiar
+npm init -y
+Instala las dependencias principales para el backend:
+
+bash
+Copiar
+npm install express mongoose dotenv bcryptjs jsonwebtoken cors
+Instala las dependencias para desarrollo (si es necesario):
+
+bash
+Copiar
+npm install --save-dev nodemon
+Crea un archivo .env para almacenar las variables de entorno, como la URL de la base de datos y la clave secreta para JWT:
+
+ini
+Copiar
+DB_URI=mongodb://localhost:27017/inventario
+JWT_SECRET=tu_clave_secreta
+1.3. Inicializar proyecto React (Frontend)
+Crea un proyecto de React en el mismo directorio:
+
+bash
+Copiar
+npx create-react-app client
+Instala dependencias en el frontend:
+
+bash
+Copiar
+cd client
+npm install axios react-router-dom
+2. Estructura del Backend (Node.js + Express + MongoDB)
+2.1. Crear la estructura de carpetas
+Crea una estructura básica de carpetas para organizar el código:
+*******************************************************************************************
+bash
+Copiar
+inventario-app/
+├── client/            # Proyecto de React (Frontend)
+├── server/            # Backend (Node.js)
+│   ├── models/        # Modelos de MongoDB
+│   ├── routes/        # Rutas de la API
+│   ├── controllers/   # Lógica de los controladores
+│   ├── middlewares/   # Middlewares (Autenticación, roles, etc.)
+│   └── server.js      # Archivo principal del servidor
+└── .env               # Variables de entorno
+2.2. Crear modelo de Usuario (con roles)
+Crea un modelo de Usuario que incluya la autenticación y los roles (por ejemplo, admin, user).
+
+server/models/User.js
+
+javascript
+Copiar
+const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
+
+const userSchema = new mongoose.Schema({
+  username: { type: String, required: true, unique: true },
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+  role: { type: String, default: 'user' },  // Roles: admin, user
+});
+
+userSchema.pre('save', async function (next) {
+  if (!this.isModified('password')) return next();
+  const salt = await bcrypt.genSalt(10);
+  this.password = await bcrypt.hash(this.password, salt);
+});
+
+userSchema.methods.matchPassword = async function (password) {
+  return await bcrypt.compare(password, this.password);
+};
+
+module.exports = mongoose.model('User', userSchema);
+2.3. Crear rutas de autenticación
+Crea las rutas para registro y autenticación de usuarios.
+
+server/routes/auth.js
+
+javascript
+Copiar
+const express = require('express');
+const User = require('../models/User');
+const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
+const router = express.Router();
+
+// Registro de usuario
+router.post('/register', async (req, res) => {
+  const { username, email, password, role } = req.body;
+  const userExists = await User.findOne({ email });
+  if (userExists) return res.status(400).json({ message: 'El correo ya está registrado' });
+
+  const newUser = new User({ username, email, password, role });
+  await newUser.save();
+  res.status(201).json({ message: 'Usuario registrado exitosamente' });
+});
+
+// Login de usuario
+router.post('/login', async (req, res) => {
+  const { email, password } = req.body;
+  const user = await User.findOne({ email });
+  if (!user) return res.status(400).json({ message: 'Correo o contraseña incorrectos' });
+
+  const isMatch = await user.matchPassword(password);
+  if (!isMatch) return res.status(400).json({ message: 'Correo o contraseña incorrectos' });
+
+  const token = jwt.sign({ id: user._id, role: user.role }, process.env.JWT_SECRET, { expiresIn: '1h' });
+  res.json({ token });
+});
+
+module.exports = router;
+2.4. Middleware para protección de rutas
+Crea un middleware para verificar el JWT y gestionar roles.
+
+server/middlewares/auth.js
+
+javascript
+Copiar
+const jwt = require('jsonwebtoken');
+
+// Verificar si el token es válido
+const protect = (req, res, next) => {
+  const token = req.header('Authorization')?.split(' ')[1];
+  if (!token) return res.status(401).json({ message: 'No autorizado, token no encontrado' });
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = decoded;  // Se añade la información del usuario a la solicitud
+    next();
+  } catch (error) {
+    res.status(401).json({ message: 'Token no válido' });
+  }
+};
+
+// Verificar si el usuario tiene el rol adecuado
+const authorize = (roles) => (req, res, next) => {
+  if (!roles.includes(req.user.role)) {
+    return res.status(403).json({ message: 'Acceso denegado' });
+  }
+  next();
+};
+
+module.exports = { protect, authorize };
+2.5. Crear rutas para la gestión de inventarios
+Ahora, crea las rutas para gestionar el inventario, como agregar, eliminar y actualizar productos.
+
+server/routes/inventory.js
+
+javascript
+Copiar
+const express = require('express');
+const { protect, authorize } = require('../middlewares/auth');
+const router = express.Router();
+
+// Modelo de Producto
+const Product = require('../models/Product');
+
+// Crear un nuevo producto (solo admin)
+router.post('/', protect, authorize(['admin']), async (req, res) => {
+  const { name, description, quantity, price } = req.body;
+  const newProduct = new Product({ name, description, quantity, price });
+  await newProduct.save();
+  res.status(201).json(newProduct);
+});
+
+// Obtener todos los productos
+router.get('/', protect, async (req, res) => {
+  const products = await Product.find();
+  res.json(products);
+});
+
+module.exports = router;
+2.6. Configurar Express y conectar MongoDB
+server/server.js
+
+javascript
+Copiar
+const express = require('express');
+const mongoose = require('mongoose');
+const cors = require('cors');
+const dotenv = require('dotenv');
+const authRoutes = require('./routes/auth');
+const inventoryRoutes = require('./routes/inventory');
+
+dotenv.config();
+
+const app = express();
+
+// Conectar con MongoDB
+mongoose.connect(process.env.DB_URI, { useNewUrlParser: true, useUnifiedTopology: true })
+  .then(() => console.log('Conectado a MongoDB'))
+  .catch((err) => console.error('Error al conectar con MongoDB:', err));
+
+app.use(cors());
+app.use(express.json());
+
+// Rutas
+app.use('/api/auth', authRoutes);
+app.use('/api/inventory', inventoryRoutes);
+
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`Servidor corriendo en el puerto ${PORT}`));
+3. Estructura del Frontend (React)
+3.1. Configurar React Router
+Configura React Router para manejar las rutas de la aplicación.
+
+client/src/App.js
+
+javascript
+Copiar
+import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
+import Login from './components/Login';
+import Register from './components/Register';
+import Inventory from './components/Inventory';
+
+function App() {
+  return (
+    <Router>
+      <Routes>
+        <Route path="/" element={<Inventory />} />
+        <Route path="/login" element={<Login />} />
+        <Route path="/register" element={<Register />} />
+      </Routes>
+    </Router>
+  );
+}
+
+export default App;
+3.2. Crear componentes de registro y login
+client/src/components/Register.js
+
+javascript
+Copiar
+import React, { useState } from 'react';
+import axios from 'axios';
+
+const Register = () => {
+  const [formData, setFormData] = useState({ username: '', email: '', password: '' });
+
+  const handleChange = (e) => setFormData({ ...formData, [e.target.name]: e.target.value });
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    try {
+      await axios.post('http://localhost:5000/api/auth/register', formData);
+      alert('Usuario registrado exitosamente');
+    } catch (error) {
+      console.error(error);
+      alert('Error al registrar el usuario');
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit}>
+      <input type="text" name="username" onChange={handleChange} placeholder="Nombre de usuario" />
+      <input type="email" name="email" onChange={handleChange} placeholder="Correo electrónico" />
+      <input type="password" name="password" onChange={handleChange} placeholder="Contraseña" />
+      <button type="submit">Registrar</button>
+    </form>
+  );
+};
+
+export default Register;
